@@ -1,0 +1,1247 @@
+---
+title: "When Indemnity Insurance Fails: Parametric Coverage under Binding Budget and Risk Constraints"
+author: Benjamin Avanzi, Debbie Kusch Falden, and Mogens Steffensen
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    df_print: paged
+header-includes:
+  - \newcommand{\MV}[3]{\operatorname{MV}^{(\text{#1})}\left(#2;#3\right)}
+  - \newcommand{\Ben}[2]{\mathfrak{B}^{(\text{#1})}\left(#2\right)}
+  - \newcommand{\prem}[3]{\mathcal{P}^{(\text{#1})}\left(#2;#3\right)}
+  - \newcommand{\Var}{\text{Var}}
+  - \newcommand{\E}{\mathbb{E}}
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+
+```{r setup, echo=TRUE,warning=FALSE,message=FALSE}
+library(plot3D)
+library(gsl)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+```
+
+# Introduction
+
+This is the code to accompany the paper "When Indemnity Insurance Fails:
+Parametric Coverage under Binding Budget and Risk Constraints" by Benjamin Avanzi, Debbie Kusch Falden, and Mogens Steffensen available on [arxiv]
+(http://www.arxiv.org)
+
+# Parameter settings
+
+## Loss parameters
+
+For the losses $Y_i$
+
+```{r losspara}
+lambda<-1/50 # Poisson frequency
+
+L<- 500000 # maximum loss amount
+nu<-1/350000 # shape parameter for the exponential
+```
+
+## Utility function
+
+```{r utilitypara}
+
+# Initial wealth
+w0 <- 150000 # 30% equity for a 500k worth home
+
+# Mean variance parameter
+beta <- 1/w0
+# NOTE HERE WE ARE SCALING $\beta$ BY INITIAL WEALTH RATHER THAN DIVIDING BY E[X]
+```
+
+## Premium parameters (default)
+
+```{r premiumpara}
+# extra dollar costs (net of theta)
+gamma_d <- 10000 # indemnity
+gamma_p <- 0 # parametric
+
+# premium loadings, say between 10% and 50%
+theta_d <- 0.3 
+theta_p <- 0.3
+
+# initial budget constraint
+P<-10000
+
+```
+
+
+# Formulas for censored exponential
+
+Here we include formulas for the case where
+\begin{equation} \label{E_losses}
+f_{Y_1}(y)=
+\begin{cases}
+\nu e^{-\nu y}, & y \in [0,L);\\
+e^{-\nu L},     & y = L;\\
+0,              & \text{otherwise}.
+\end{cases}
+\end{equation}
+as per Section 3.2.
+
+```{r formulascensored_sametheta_onegamma,eval=TRUE}
+## Assumes globals: theta, lambda, nu, L, beta, w0
+
+### HELPER: basic moments for censored exponential
+EY  <- (1 - exp(-nu*L)) / nu
+EY2 <- 2/nu^2 - 2*exp(-nu*L)/nu^2 - 2*L*exp(-nu*L)/nu
+
+Excess <- function(d){
+  d_eff <- pmin(pmax(d, 0), L)     # project to [0, L]
+  (exp(-nu*d_eff) - exp(-nu*L)) / nu
+}
+
+# 2 * (1 - e^{-nu d} (1 + nu d)) / nu^2  with d projected
+G_d <- function(d){
+  d_eff <- pmin(pmax(d, 0), L)
+  2 * (1 - exp(-nu*d_eff) * (1 + nu*d_eff)) / nu^2
+}
+
+### PREMIA AND MV ###
+
+# premium indemnity (d): (1+theta) * (lambda E[(Y-d)_+] + gamma_d)
+pi_d <- function(d, theta_d, gamma_d){
+  (1 + theta_d) * (lambda * Excess(d) + gamma_d)
+}
+
+# mean–variance indemnity (d)
+# MV(d) = w0 - pi_d - lambda E[Y] + lambda E[(Y-d)_+] - beta*lambda * G(d)
+MV_d <- function(d, theta_d, gamma_d){
+  w0 - pi_d(d,theta_d, gamma_d) - lambda * EY + lambda * Excess(d) - beta * lambda * G_d(d)
+}
+
+# premium parametric (k): (1+theta) * (lambda k + gamma_p)
+pi_p <- function(k, theta_p, gamma_p){
+  (1 + theta_p) * (lambda * k + gamma_p)
+}
+
+# mean–variance for parametric insurance (k)
+# MV(k) = w0 - pi_p - lambda E[Y] + lambda k - beta*lambda*(E[Y^2] + k^2 - 2k E[Y])
+MV_p <- function(k, theta_p, gamma_p){
+  w0 - pi_p(k,theta_p, gamma_p) - lambda * EY + lambda * k -
+    beta * lambda * (EY2 + k^2 - 2 * k * EY)
+}
+
+### OPTIMAL PARAMETERS ###
+
+# optimal deductible for same theta: d* = theta / (2 beta), projected to [0, L]
+d_star <- function(theta_d){pmin(pmax(theta_d / (2 * beta), 0), L)}
+d_star(theta_d)
+
+# optimal pay-out in parametric 
+# k* = E[Y] - theta/(2 beta)  (project externally if you enforce bounds) <- for same theta
+k_star <- function(theta_p){EY - theta_p / (2 * beta)}
+k_star(theta_p)
+
+### AUXILIARY FUNCTIONS ###
+
+# best k for given premium pi_target (parametric cover)
+# Premium formula: pi = (1+theta) * (lambda * k + gamma_p)
+# => k = (pi/(1+theta) - gamma_p) / lambda
+fk_star <- function(pi_target,theta_p, gamma_p){
+  k <- (pi_target / (1 + theta_p) - gamma_p) / lambda
+  pmin(pmax(k,0), L) # should be between 0 and L
+}
+# Note: if the target premium is too large the corresponding k will be capped at L and in the end we do not spend exactly the same amount of money. 
+
+
+# optimum d for a given premium pi_target (indemnity cover)
+# Premium: pi(d) = (1+theta) * (lambda * E[(Y - d)_+] + gamma_d)
+# with E[(Y - d)_+] = (exp(-nu*d) - exp(-nu*L)) / nu   for d in [0, L]
+# => Let q = (pi_target/(1+theta) - gamma_d) / lambda  (must be in [0, (1 - exp(-nu*L))/nu])
+# => exp(-nu*d) = nu*q + exp(-nu*L)  =>  d = -(1/nu) * log(nu*q + exp(-nu*L))
+fd_star <- function(pi_target,theta_d, gamma_d){
+  q <- (pi_target / (1 + theta_d) - gamma_d) / lambda
+
+  q_min <- 0
+  q_max <- (1 - exp(-nu * L)) / nu  # = E[Y] for d=0
+
+  qc <- pmin(pmax(q, q_min), q_max) # clamp to feasible range
+
+  d <- -(1 / nu) * log(nu * qc + exp(-nu * L))
+  pmin(pmax(d, 0), L)               # ensure d in [0, L]
+}
+
+
+```
+
+# Numerical calculations
+
+## Warm up calculations
+
+### Premium with optimal parameters $d^*$ and $k^*$ but $\gamma_d=\gamma_p=0$
+
+```{r optimalpremium}
+#Premium at optimal deductible 
+pi_d(d_star(theta_d), theta_d, 0)
+
+#Premium at optimal payout
+pi_p(k_star(theta_p), theta_p, 0)
+
+```
+
+```{r optimumMVdelta}
+#Set $\gamma=0$ and compare MV d* MV k* | premiums will be different
+MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(theta_d),theta_d,0)
+```
+
+```{r case1}
+
+# gamma that makes MV equal
+gamma_indif <- uniroot(function(g){MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(theta_d),theta_d,g)}, lower=-10^10, upper=10^10)$root
+gamma_indif
+
+```
+
+## Premium and MV by varying $\gamma_d>0$ and $\gamma_p=0$ fixed
+
+### Premia
+
+```{r optimalpremium function of gamma}
+
+# Range of gamma_d values
+gamma_d_vec <- seq(0, 30000, by = 500)
+
+# Compute premiums
+premium_df <- data.frame(
+  gamma_d = gamma_d_vec,
+  P_d = sapply(gamma_d_vec, function(g) pi_d(d_star(theta_d),theta_d, g)),  
+  P_p = pi_p(k_star(theta_p),theta_p, gamma_p)             # parametric premium (constant)
+)
+ 
+# Convert to long format
+premium_df_long <- premium_df %>%
+  pivot_longer(cols = c(P_d, P_p), names_to = "Type", values_to = "Premium")
+
+# Plot (legend only, no direct text labels)
+ggplot(premium_df_long, aes(x = gamma_d, y = Premium, color = Type)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = c("P_d" = "#0072B2", "P_p" = "#D55E00")) +
+  scale_y_continuous(limits = c(0, NA)) +  #ensures y-axis starts at 0
+  labs(
+    title = expression("Premiums as functions of " ~ gamma[d]),
+    x = expression(gamma[d]),
+    y = "Premium",
+    color = "Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+
+### MV
+
+```{r optimalMV function of gamma}
+
+# Range of gamma_d values
+gamma_d_vec <- seq(0, 30000, by = 500)
+
+# Compute premiums
+MV_df <- data.frame(
+  gamma_d = gamma_d_vec,
+  MV_d = sapply(gamma_d_vec, function(g) MV_d(d_star(theta_d),theta_d, g)),  
+  MV_p = MV_p(k_star(theta_p),theta_p, gamma_p)             # parametric premium (constant)
+)
+ 
+# Convert to long format
+MV_df_long <- MV_df %>%
+  pivot_longer(cols = c(MV_d, MV_p), names_to = "Type", values_to = "MeanVar")
+
+# Plot (legend only, no direct text labels)
+ggplot(MV_df_long, aes(x = gamma_d, y = MeanVar, color = Type)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = c("MV_d" = "#0072B2", "MV_p" = "#D55E00")) +
+  scale_y_continuous(limits = c(0, NA)) +   # ensures y-axis starts at 0
+  labs(
+    title = expression("Mean variance as functions of " ~ gamma[d]),
+    x = expression(gamma[d]),
+    y = "MeanVar",
+    color = "Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+```
+
+## Figure 1
+
+What $\gamma_d$ is making the parametric cover preferred with $d^*$. Using both optimal $k^*$ and $k$ so as to equalise premiums ($k \equiv k(\prem{d}{d}{\theta,\gamma_d})$) ?
+
+```{r case12}
+
+# gamma_d that makes MV equal if you give parametric the budget spent on d^*
+gamma_indif2 <- uniroot(function(g){
+  MV_p(fk_star(pi_d(d_star(theta_d),theta_d, g),
+       theta_p,gamma_p), 
+  theta_p, gamma_p)-
+  MV_d(d_star(theta_d),
+  theta_d,g)}, 
+  lower=-10^10, upper=10^10)$root
+gamma_indif2
+
+```
+
+### Figure 1a
+
+```{r gammaplot_dualaxis, message=FALSE, warning=FALSE}
+
+
+## =========================================================
+## USER-CONTROLLED AXIS RANGES
+## (set to NA to let data decide)
+## =========================================================
+premium_min <- 5000
+premium_max <- 50000        # e.g. 25000
+
+MV_min <- 110000             # e.g. 120000
+MV_max <- 145000             # e.g. 145000
+
+## =========================================================
+## 1) GRID IN gamma_d
+## =========================================================
+gamma_d_vec <- seq(0, 15000, by = 500)
+
+## =========================================================
+## 2) COMPUTE PREMIUMS AND MEAN–VARIANCE
+## =========================================================
+premium_MV_df <- data.frame(
+  gamma_d = gamma_d_vec,
+
+  # premiums
+  P_d = sapply(gamma_d_vec, function(g)
+    pi_d(d_star(theta_d), theta_d, g)),
+  P_p = rep(pi_p(k_star(theta_p), theta_p, gamma_p),
+            length(gamma_d_vec)),
+
+  # MV at own optima
+  MV_d = sapply(gamma_d_vec, function(g)
+    MV_d(d_star(theta_d), theta_d, g)),
+  MV_p = rep(MV_p(k_star(theta_p), theta_p, gamma_p),
+             length(gamma_d_vec)),
+
+  # MV of parametric given indemnity budget
+  MV_p_Pd = sapply(gamma_d_vec, function(g)
+    MV_p(
+      fk_star(pi_d(d_star(theta_d), theta_d, g),
+              theta_p, gamma_p),
+      theta_p, gamma_p
+    ))
+)
+
+## =========================================================
+## 3) RAW RANGES AND USER OVERRIDES
+## =========================================================
+premium_raw_range <- range(premium_MV_df[, c("P_d", "P_p")], na.rm = TRUE)
+MV_raw_range <- range(premium_MV_df[, c("MV_d", "MV_p", "MV_p_Pd")],
+                      na.rm = TRUE)
+
+premium_range <- c(
+  if (is.na(premium_min)) premium_raw_range[1] else premium_min,
+  if (is.na(premium_max)) premium_raw_range[2] else premium_max
+)
+
+MV_range <- c(
+  if (is.na(MV_min)) MV_raw_range[1] else MV_min,
+  if (is.na(MV_max)) MV_raw_range[2] else MV_max
+)
+
+## =========================================================
+## 4) AFFINE TRANSFORMATION (MV -> PREMIUM AXIS)
+## =========================================================
+b <- diff(premium_range) / diff(MV_range)
+a <- premium_range[1] - b * MV_range[1]
+
+MV_to_left <- function(MV) a + b * MV
+left_to_MV <- function(y)  (y - a) / b
+
+## =========================================================
+## 5) DATA FOR PLOTTING (LONG FORMAT)
+## =========================================================
+plot_df <- premium_MV_df %>%
+  mutate(
+    MV_d_left    = MV_to_left(MV_d),
+    MV_p_left    = MV_to_left(MV_p),
+    MV_p_Pd_left = MV_to_left(MV_p_Pd)
+  ) %>%
+  select(gamma_d, P_d, P_p, MV_d_left, MV_p_left, MV_p_Pd_left) %>%
+  pivot_longer(
+    cols = -gamma_d,
+    names_to = "Series",
+    values_to = "Value"
+  )
+
+## =========================================================
+## 6) VERTICAL REFERENCE LINES
+## =========================================================
+gamma_d_line  <- gamma_indif
+gamma_d_line2 <- gamma_indif2
+
+## =========================================================
+## 7) PLOT
+## =========================================================
+ggplot(plot_df, aes(x = gamma_d, y = Value, color = Series)) +
+  geom_line(linewidth = 1.2) +
+
+  geom_vline(xintercept = gamma_d_line,
+             linetype = "dashed", color = "#009E73", linewidth = 0.8) +
+  geom_vline(xintercept = gamma_d_line2,
+             linetype = "dashed", color = "#E69F00", linewidth = 0.8) +
+
+  annotate(
+    "text",
+    x = gamma_d_line,
+    y = MV_to_left(0.85 * MV_d(d_star(theta_d), theta_d, gamma_d_line)),
+    label = "gamma[indif]",
+    parse = TRUE,
+    color = "#009E73",
+    vjust = -0.5
+  ) +
+  annotate(
+    "text",
+    x = gamma_d_line2,
+    y = MV_to_left(0.85 * MV_d(d_star(theta_d), theta_d, gamma_d_line2)),
+    label = "gamma[indif]*\"'\"",
+    parse = TRUE,
+    color = "#E69F00",
+    vjust = -0.5
+  ) +
+
+  scale_color_manual(
+    values = c(
+      P_d          = "#0072B2",
+      P_p          = "#D55E00",
+      MV_d_left    = "#009E73",
+      MV_p_left    = "#CC79A7",
+      MV_p_Pd_left = "#E69F00"
+    ),
+    labels = c(
+      P_d          = expression(P[d]),
+      P_p          = expression(P[p]),
+      MV_d_left    = expression(MV[d]),
+      MV_p_left    = expression(MV[p]),
+      MV_p_Pd_left = expression(MV[p]^{"(budget "~P[d]~")"})
+    )
+  ) +
+
+  scale_y_continuous(
+    name = "Premium",
+    limits = premium_range,
+    sec.axis = sec_axis(
+      transform = left_to_MV,
+      name = "Mean--Variance",
+      breaks = scales::pretty_breaks()(MV_range)
+    )
+  ) +
+
+  labs(
+    title = expression("Premium and Mean--Variance vs " ~ gamma[d]),
+    x = expression(gamma[d]),
+    color = "Series"
+  ) +
+
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.title.y.right = element_text(margin = margin(l = 8))
+  )
+
+```
+
+
+
+
+### Figure 1b
+
+```{r case2,fig.height=10,fig.width=10}
+#make ED plot
+M <- mesh(seq(0, 500000, length.out = 500),seq(0, 20000, length.out = 500))
+d <- M$x
+g <- M$y
+MVd <- MV_d(d,theta_d,g)
+
+#surf3D(x = d, y = g, z = MVd, bty="b2", colorkey = list(width=0.3),
+#       phi = 30, theta = 40, xlab="d", ylab="gamma", zlab="MV_d",
+#       main = "Mean Variance of Indemnity with d^*")
+
+
+# optimal k's for budget defined by indemnity premium on d and g 
+k_vec <- fk_star(pi_d(d,theta_d, g),theta_p,gamma_p)
+
+# corresponding MV of parametric
+MVp <- MV_p(k_vec,theta_p,gamma_p)
+
+# difference
+MVdiff <- MVp - MVd
+
+# set negative differences to NA so they disappear from plot
+MVdiff_pos <- MVdiff
+MVdiff_pos[MVdiff_pos < 0] <- NA
+
+# 3D plot: only positive differences visible
+surf3D(
+  x = d, y = g, z = MVdiff_pos,
+  bty="b2", colorkey = list(width=0.3),
+  phi = 30, theta = -50,
+  xlab="d", ylab="gamma", zlab="MV_p - MV_d",
+  main = "Positive MV Advantage: Parametric Over Indemnity"
+)
+
+k_cap <- fk_star(pi_d(d,theta_d, g),theta_p,gamma_p)
+cap_region <- ifelse(k_cap >= L, 1, NA)
+
+surf3D(x=d, y=g, z=cap_region, add=TRUE, col="black")
+
+
+```
+
+
+
+## Figure 2: 
+
+With $\gamma_d=\gamma_p=0$, find $\theta^{indiff}\ (\geq \theta_p)$ such that $\MV{d}{W}{d^*,\theta^{indiff},0}=\MV{p}{W}{k^*,\theta_p,0}$
+
+```{r case3 indiff}
+
+
+# theta that makes MV equal
+theta_indif <- uniroot(function(th){MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(th),th,0)}, lower=theta_p, upper=10^10)$root
+theta_indif
+
+```
+
+What $\theta$ is making the parametric cover preferred with $d^*$. Using both optimal $k^*$ and $k$ so as to equalise premiums ($k \equiv k(\prem{d}{d}{\theta,0})$)
+
+```{r thetaindif}
+theta_d <- 0.5
+theta_p <- 0.2
+
+# theta that makes MV equal if you give parametric the budget spent on d^*
+theta_indif2 <- uniroot(function(th){
+                                    MV_p(fk_star(pi_d(d_star(th),th, 0),theta_p,0),theta_p,0)-
+                                    MV_d(d_star(th),th,0)
+                                    },
+    lower=theta_p, upper=5)$root
+theta_indif2
+
+
+```
+
+### Figure 2a
+
+```{r thetaplot}
+## ---- thetaplot_clean2, message=FALSE, warning=FALSE --------------------
+
+# Use previously computed roots:
+#   theta_indif  from "case3 indiff"
+#   theta_indif2 from "thetaindif"
+theta_d_line  <- theta_indif
+theta_d_line2 <- theta_indif2
+
+# ---------------------------------------------------------
+# 0) USER-CONTROLLED AXIS RANGES (set NA for automatic)
+# ---------------------------------------------------------
+premium_min <- NA
+premium_max <- 14000
+
+MV_min <- 120000
+MV_max <- 142000
+# ---------------------------------------------------------
+
+# 0b) critical loading (optional cap if you want it)
+theta_bar <- 2 * beta * L   # \bar{theta}
+
+# 1) grid
+theta_d_vec <- seq(theta_p, 3, by = 0.05)
+
+# 2) compute quantities
+theta_premium_MV_df <- data.frame(
+  theta_d = theta_d_vec,
+  P_d = sapply(theta_d_vec, function(th) pi_d(d_star(th), th, 0)),
+  P_p = rep(pi_p(k_star(theta_p), theta_p, 0), length(theta_d_vec)),
+  MV_d = sapply(theta_d_vec, function(th) MV_d(d_star(th), th, 0)),
+  MV_p = rep(MV_p(k_star(theta_p), theta_p, 0), length(theta_d_vec)),
+  MV_p_Pd = sapply(theta_d_vec, function(th)
+    MV_p(fk_star(pi_d(d_star(th), th, 0), theta_p, 0), theta_p, 0))
+)
+
+# 3) RAW data ranges
+premium_raw_range <- range(theta_premium_MV_df[, c("P_d", "P_p")], na.rm = TRUE)
+MV_raw_range      <- range(theta_premium_MV_df[, c("MV_d", "MV_p", "MV_p_Pd")],
+                           na.rm = TRUE)
+
+# 4) APPLY USER LIMITS (if not NA)
+premium_range <- c(
+  if (is.na(premium_min)) premium_raw_range[1] else premium_min,
+  if (is.na(premium_max)) premium_raw_range[2] else premium_max
+)
+
+MV_range <- c(
+  if (is.na(MV_min)) MV_raw_range[1] else MV_min,
+  if (is.na(MV_max)) MV_raw_range[2] else MV_max
+)
+
+# 5) affine transform MV -> left axis using THESE ranges
+b <- diff(premium_range) / diff(MV_range)
+a <- premium_range[1] - b * MV_range[1]
+
+MV_to_left <- function(MV) a + b * MV
+left_to_MV <- function(y)  (y - a) / b
+
+# 6) colours
+col_P_d     <- "#0072B2"
+col_P_p     <- "#D55E00"
+col_MV_d    <- "#009E73"
+col_MV_p    <- "#000000"
+col_MV_pPd  <- "#CC79A7"
+
+# 7) build plot
+ggplot(theta_premium_MV_df, aes(x = theta_d)) +
+  # premiums (left axis)
+  geom_line(aes(y = P_d, color = "P_d"), linewidth = 1.2) +
+  geom_line(aes(y = P_p, color = "P_p"), linewidth = 1.2) +
+
+  # MV curves mapped to left axis
+  geom_line(aes(y = MV_to_left(MV_d),    color = "MV_d"),    linewidth = 1.2) +
+  geom_line(aes(y = MV_to_left(MV_p),    color = "MV_p"),    linewidth = 1.2) +
+  geom_line(aes(y = MV_to_left(MV_p_Pd), color = "MV_p_Pd"), linewidth = 1.2) +
+
+  # vertical lines
+  geom_vline(xintercept = theta_d_line,  linetype = "dashed",
+             color = col_MV_d, linewidth = 0.8) +
+  geom_vline(xintercept = theta_d_line2, linetype = "dashed",
+             color = col_MV_pPd, linewidth = 0.8) +
+
+  # labels for theta_indif and theta_indif'
+  annotate(
+    "text",
+    x = theta_d_line,
+    y = MV_to_left(MV_d(d_star(theta_d_line), theta_d_line, 0)),
+    label = "theta[indif]",
+    color = col_MV_d,
+    parse = TRUE,
+    vjust = -0.6,
+    size  = 4
+  ) +
+  annotate(
+    "text",
+    x = theta_d_line2,
+    y = MV_to_left(MV_d(d_star(theta_d_line2), theta_d_line2, 0)),
+    label = "theta[indif]^\"'\"",
+    color = col_MV_pPd,
+    parse = TRUE,
+    vjust = -0.6,
+    size  = 4
+  ) +
+
+  # label for theta_p near bottom
+  annotate(
+    "text",
+    x = theta_p,
+    y = premium_range[1] + 0.05 * diff(premium_range),
+    label = "theta[p]",
+    parse = TRUE,
+    vjust = 0,
+    size  = 4
+  ) +
+
+  # colours and legend
+  scale_color_manual(
+    values = c(
+      P_d     = col_P_d,
+      P_p     = col_P_p,
+      MV_d    = col_MV_d,
+      MV_p    = col_MV_p,
+      MV_p_Pd = col_MV_pPd
+    ),
+    breaks = c("P_d", "P_p", "MV_d", "MV_p", "MV_p_Pd"),
+    labels = c(
+      P_d     = expression(P[d]),
+      P_p     = expression(P[p]),
+      MV_d    = expression(MV[d]),
+      MV_p    = expression(MV[p]),
+      MV_p_Pd = expression(MV[p]^{"(budget "~P[d]~")"})
+    )
+  ) +
+
+  # y axes
+  scale_y_continuous(
+    name   = "Premium",
+    limits = premium_range,
+    sec.axis = sec_axis(
+      transform = left_to_MV,
+      name      = "Mean-Variance",
+      breaks    = scales::pretty_breaks()(MV_range)
+    )
+  ) +
+
+  # x axis
+  scale_x_continuous(
+    name   = expression(theta[d]),
+    breaks = pretty(theta_d_vec)
+    # , limits = c(theta_p, theta_bar)  # uncomment to cap at \bar{theta}
+  ) +
+
+  labs(
+    title = expression("Premium and Mean-Variance vs " ~ theta[d]),
+    color = "Series"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position    = "top",
+    plot.title         = element_text(face = "bold", hjust = 0.5),
+    axis.title.y.right = element_text(margin = margin(l = 8))
+  )
+```
+
+### Figure 2b
+
+```{r case4bis,fig.width=10,fig.height=10}
+
+## ---- case4, fig.height=15, fig.width=15 -------------------------------
+
+# Grid over theta_d (th) and gamma_d (g)
+Mtg <- mesh(seq(theta_p, 2, by = 0.05),
+            seq(0, 15000, length.out = 500))
+th <- Mtg$x   # theta_d
+g  <- Mtg$y   # gamma_d
+
+## 1. Indemnity MV at optimal deductible d*(theta_d)
+MVtgd <- MV_d(d_star(th), th, g)
+
+# Optional: surface of MV_d
+surf3D(
+  x = th, y = g, z = MVtgd,
+  bty = "b2", colorkey = list(width = 0.3),
+  phi = 30, theta = 40,
+  xlab = expression(theta[d]),
+  ylab = expression(gamma[d]),
+  zlab = expression(MV[d]),
+  main = "Mean-Variance of Indemnity (optimal d*)"
+)
+
+## 2. Parametric MV with premium matched to indemnity
+# Match premiums: use indemnity premium at d*(theta_d), gamma_d = g
+k_vec <- fk_star(pi_d(d_star(th), th, g), theta_p, gamma_p)
+
+# Corresponding MV for parametric
+MVtgp <- MV_p(k_vec, theta_p, gamma_p)
+
+# Optional: surface of MV_p
+surf3D(
+  x = th, y = g, z = MVtgp,
+  bty = "b2", colorkey = list(width = 0.3),
+  phi = 30, theta = 40,
+  xlab = expression(theta[d]),
+  ylab = expression(gamma[d]),
+  zlab = expression(MV[p]),
+  main = "Mean-Variance of Parametric (premium-matched)"
+)
+
+## 3. Difference MV_p - MV_d over the (theta_d, gamma_d) grid
+MVdiff <- MVtgp - MVtgd
+
+# 3a. Full difference surface (can be commented out if not needed)
+surf3D(
+  x = th, y = g, z = MVdiff,
+  bty = "b2", colkey = TRUE,
+  phi = 40, theta = -30,
+  xlab = expression(theta[d]),
+  ylab = expression(gamma[d]),
+  zlab = expression(MV[p] - MV[d]),
+  main = "MV Difference: Parametric Minus Indemnity"
+)
+
+## 4. Only positive MV advantage of parametric
+MVdiff_pos <- MVdiff
+MVdiff_pos[MVdiff_pos < 0] <- NA   # mask negative differences
+
+surf3D(
+  x = th, y = g, z = MVdiff_pos,
+  bty = "b2", colkey = list(width = 0.3),
+  phi = 40, theta = 40,
+  xlab = expression(theta[d]),
+  ylab = expression(gamma[d]),
+  zlab = expression(MV[p] - MV[d]),
+  main = "Positive MV Advantage: Parametric Over Indemnity"
+)
+
+## 5. Overlay cap region k >= L in black (as in the d-gamma case)
+k_cap <- k_vec  # already computed above
+cap_region <- ifelse(k_cap >= L, 1, NA)
+
+surf3D(
+  x = th, y = g, z = cap_region,
+  add = TRUE,
+  col = "black"
+)
+
+```
+
+
+
+
+
+## Figure 3: 
+
+Budget constraints
+
+
+```{r BChelper}
+# Premium budget
+P_bar <- 8000  # <-- choose your budget here
+
+# Safe solver: deductible that delivers premium P_target for given (theta_d, gamma_d)
+# Returns NA if P_target is outside the attainable premium range.
+d_budget_for_P <- function(P_target, theta_d, gamma_d) {
+  P_max <- pi_d(0,  theta_d, gamma_d)  # premium at smallest deductible
+  P_min <- pi_d(L,  theta_d, gamma_d)  # premium at largest deductible
+  
+  # ensure we know which is min / max (in case premium is increasing in d)
+  P_hi  <- max(P_max, P_min)
+  P_lo  <- min(P_max, P_min)
+  
+  # If target premium not attainable by any d in [0, L], return NA
+  if (P_target < P_lo || P_target > P_hi) {
+    return(NA_real_)
+  }
+  
+  # Otherwise, solve for d s.t. pi_d(d) = P_target
+  uniroot(
+    f = function(d) pi_d(d, theta_d, gamma_d) - P_target,
+    interval = c(0, L)
+  )$root
+}
+
+
+# Parametric: best within budget (same for all gamma / theta)
+k_opt  <- k_star(theta_p)                         # unconstrained optimum
+P_popt <- pi_p(k_opt, theta_p, gamma_p)
+
+if (P_popt <= P_bar) {
+  k_budget  <- k_opt
+  P_p_eff   <- P_popt
+} else {
+  k_budget  <- fk_star(P_bar, theta_p, gamma_p)
+  P_p_eff   <- P_bar
+}
+MV_p_budget_const <- MV_p(k_budget, theta_p, gamma_p)  # same for all gamma/theta
+
+```
+
+
+
+
+### Figure 3a
+
+
+```{r BCbudgetplot_dual, message=FALSE, warning=FALSE}
+gamma_d <- 1000
+gamma_p <- 0
+theta_d <- 0.3
+theta_p <- 0.3
+
+# ---------------------------------------------------------
+# 0) "No insurance" mean–variance
+#    (parametric with k = 0, theta = 0, gamma = 0)
+# ---------------------------------------------------------
+MV_noins <- MV_p(0, 0, 0)
+
+# ---------------------------------------------------------
+# 1) Unconstrained optima for indemnity and parametric
+# ---------------------------------------------------------
+
+# Indemnity (fixed theta_d, gamma_d)
+d_opt    <- d_star(theta_d)
+P_d_opt  <- pi_d(d_opt, theta_d, gamma_d)
+MV_d_opt <- MV_d(d_opt, theta_d, gamma_d)
+
+# Smallest attainable indemnity premium (max deductible d = L)
+P_d_min <- pi_d(L, theta_d, gamma_d)
+
+# Parametric (fixed theta_p, gamma_p)
+k_opt    <- k_star(theta_p)
+P_p_opt  <- pi_p(k_opt, theta_p, gamma_p)
+MV_p_opt <- MV_p(k_opt, theta_p, gamma_p)
+
+# ---------------------------------------------------------
+# 2) Budget grid
+# ---------------------------------------------------------
+
+P_min <- 0
+P_max <- max(P_d_opt, P_p_opt) * 1.4
+P_bar_vec <- seq(P_min, P_max, length.out = 100)
+
+# ---------------------------------------------------------
+# 3) Best-within-budget contracts
+#     (indemnity allowed to "stay uninsured" if better)
+# ---------------------------------------------------------
+
+budget_list <- lapply(P_bar_vec, function(P_bar) {
+  
+  ## ---- Parametric cover ----
+  if (P_bar >= P_p_opt) {
+    P_p_eff <- P_p_opt
+    MV_p_B  <- MV_p_opt
+  } else {
+    k_eff   <- fk_star(P_bar, theta_p, gamma_p)
+    P_p_eff <- pi_p(k_eff, theta_p, gamma_p)
+    MV_p_B  <- MV_p(k_eff, theta_p, gamma_p)
+  }
+  
+  ## ---- Indemnity cover ----
+  if (P_bar < P_d_min) {
+    # Only "no insurance" is feasible
+    P_d_eff <- 0
+    MV_d_B  <- MV_noins
+    
+  } else if (P_bar >= P_d_opt) {
+    # Budget not binding: candidate = optimum d*
+    P_d_candidate <- P_d_opt
+    MV_d_candidate <- MV_d_opt
+    
+    # Compare with no insurance
+    if (MV_d_candidate >= MV_noins) {
+      P_d_eff <- P_d_candidate
+      MV_d_B  <- MV_d_candidate
+    } else {
+      P_d_eff <- 0
+      MV_d_B  <- MV_noins
+    }
+    
+  } else {
+    # Budget between P_d_min and P_d_opt: solve pi_d(d) = P_bar
+    d_eff <- d_budget_for_P(P_bar, theta_d, gamma_d)
+    if (is.na(d_eff)) {
+      # Fallback: treat as no insurance
+      P_d_eff <- 0
+      MV_d_B  <- MV_noins
+    } else {
+      P_d_candidate <- pi_d(d_eff, theta_d, gamma_d)  # \approx P_bar
+      MV_d_candidate <- MV_d(d_eff, theta_d, gamma_d)
+      
+      # Compare with no insurance
+      if (MV_d_candidate >= MV_noins) {
+        P_d_eff <- P_d_candidate
+        MV_d_B  <- MV_d_candidate
+      } else {
+        P_d_eff <- 0
+        MV_d_B  <- MV_noins
+      }
+    }
+  }
+  
+  list(
+    P_d_eff = P_d_eff,
+    P_p_eff = P_p_eff,
+    MV_d_B  = MV_d_B,
+    MV_p_B  = MV_p_B
+  )
+})
+
+P_d_eff_vec <- sapply(budget_list, `[[`, "P_d_eff")
+P_p_eff_vec <- sapply(budget_list, `[[`, "P_p_eff")
+MV_d_B_vec  <- sapply(budget_list, `[[`, "MV_d_B")
+MV_p_B_vec  <- sapply(budget_list, `[[`, "MV_p_B")
+
+budget_df <- data.frame(
+  P_bar   = P_bar_vec,
+  P_d_eff = P_d_eff_vec,
+  P_p_eff = P_p_eff_vec,
+  MV_d_B  = MV_d_B_vec,
+  MV_p_B  = MV_p_B_vec
+)
+
+# ---------------------------------------------------------
+# 4) Dual-axis transform
+# ---------------------------------------------------------
+
+premium_range <- range(budget_df$P_d_eff, budget_df$P_p_eff, na.rm = TRUE)
+MV_range      <- range(budget_df$MV_d_B,  budget_df$MV_p_B,  na.rm = TRUE)
+
+b <- diff(premium_range) / diff(MV_range)
+a <- premium_range[1] - b * MV_range[1]
+
+MV_to_left <- function(MV) a + b * MV
+left_to_MV <- function(y)  (y - a) / b
+
+budget_dual_df <- data.frame(
+  P_bar        = budget_df$P_bar,
+  P_d_eff      = budget_df$P_d_eff,
+  P_p_eff      = budget_df$P_p_eff,
+  MV_d_B_left  = MV_to_left(budget_df$MV_d_B),
+  MV_p_B_left  = MV_to_left(budget_df$MV_p_B)
+)
+
+# ---------------------------------------------------------
+# compute P_indif where MV_d_B = MV_p_B
+# ---------------------------------------------------------
+MV_diff <- MV_d_B_vec - MV_p_B_vec
+
+# Restrict to region where P_bar > P_d_min
+valid_idx <- which(P_bar_vec > P_d_min)
+
+P_indif <- NA_real_
+if (length(valid_idx) > 1) {
+  Pv  <- P_bar_vec[valid_idx]
+  MvD <- MV_d_B_vec[valid_idx]
+  MvP <- MV_p_B_vec[valid_idx]
+  diff_valid <- MvD - MvP
+  
+  # only consider intervals where diff changes sign
+  sign_change_idx <- which(diff_valid[-1] * diff_valid[-length(diff_valid)] < 0)
+  
+  if (length(sign_change_idx) > 0) {
+    # take the first *positive* crossing
+    i <- sign_change_idx[1]
+    P_low  <- Pv[i]
+    P_high <- Pv[i+1]
+    
+    P_indif <- uniroot(
+      f = function(P) {
+        MVdP <- approx(P_bar_vec, MV_d_B_vec, xout = P)$y
+        MVpP <- approx(P_bar_vec, MV_p_B_vec, xout = P)$y
+        MVdP - MVpP
+      },
+      lower = P_low,
+      upper = P_high
+    )$root
+  }
+}
+
+
+plot_budget_dual <- budget_dual_df |>
+  tidyr::pivot_longer(
+    cols      = -P_bar,
+    names_to  = "Series",
+    values_to = "Value"
+  )
+
+# ---------------------------------------------------------
+# 5) Plot with reference lines
+# ---------------------------------------------------------
+
+col_P_d  <- "#0072B2"  # blue
+col_P_p  <- "#D55E00"  # orange/red
+col_MV_d <- "#009E73"  # green
+col_MV_p <- "#000000"  # black
+
+label_y <- premium_range[1] + 0.9 * diff(premium_range)
+
+ggplot(plot_budget_dual, aes(x = P_bar, y = Value, color = Series)) +
+  geom_line(linewidth = 1.2, na.rm = TRUE) +
+  
+  geom_vline(xintercept = P_d_min, linetype = "dotted", color = "grey40") +
+  geom_vline(xintercept = P_d_opt, linetype = "dashed", color = col_P_d) +
+  geom_vline(xintercept = P_p_opt, linetype = "dashed", color = col_P_p) +
+  
+  { if (!is.na(P_indif)) geom_vline(
+      xintercept = P_indif,
+      linetype = "dashed",
+      color = "purple",
+      linewidth = 0.8
+    ) } +
+
+  { if (!is.na(P_indif)) annotate(
+      "text",
+      x = P_indif,
+      y = label_y,
+      label = "bar(P)[indif]",
+      angle = 90, vjust = -0.4,
+      color = "purple",
+      parse = TRUE, size = 3.8
+    ) } +
+
+  annotate("text", x = P_d_min, y = label_y,
+           label = "P[d]^min", angle = 90, vjust = -0.4,
+           color = "grey40", parse = TRUE, size = 3.5) +
+  annotate("text", x = P_d_opt, y = label_y,
+           label = "P[d]^'*'", angle = 90, vjust = -0.4,
+           color = col_P_d, parse = TRUE, size = 3.5) +
+  annotate("text", x = P_p_opt, y = label_y,
+           label = "P[p]^'*'", angle = 90, vjust = -0.4,
+           color = col_P_p, parse = TRUE, size = 3.5) +
+  
+  scale_color_manual(
+    values = c(
+      P_d_eff      = col_P_d,
+      P_p_eff      = col_P_p,
+      MV_d_B_left  = col_MV_d,
+      MV_p_B_left  = col_MV_p
+    ),
+    labels = c(
+      P_d_eff      = expression(P[d]^"(eff)"),
+      P_p_eff      = expression(P[p]^"(eff)"),
+      MV_d_B_left  = expression(MV[d]^"(budget)"),
+      MV_p_B_left  = expression(MV[p]^"(budget)")
+    )
+  ) +
+  scale_y_continuous(
+    name   = "Premium",
+    limits = premium_range,
+    sec.axis = sec_axis(
+      transform = left_to_MV,
+      name      = "Mean-Variance",
+      breaks    = scales::pretty_breaks()(MV_range)
+    )
+  ) +
+  labs(
+    title = expression("Premiums and Mean-Variance as functions of budget " * bar(P)),
+    x     = expression(bar(P)),
+    color = "Series"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position    = "top",
+    plot.title         = element_text(face = "bold", hjust = 0.5),
+    axis.title.y.right = element_text(margin = margin(l = 8))
+  )
+```
+
+
+
+
+
+### Figure 3b
+
+```{r BC_surface_budget_gamma, message=FALSE, warning=FALSE,fig.height=10,fig.width=10}
+
+
+## ---------------------------------------------------------
+## 0) Parameters and baseline (no insurance) MV
+## ---------------------------------------------------------
+gamma_p <- 0
+theta_p <- 0.3
+theta_d <- 0.3
+
+# "No insurance" benchmark: no premium, no cover
+MV_noins <- MV_p(0, 0, 0)
+
+# Unconstrained optima (do NOT depend on P_bar or gamma_d)
+k_opt    <- k_star(theta_p)
+P_p_opt  <- pi_p(k_opt, theta_p, gamma_p)
+MV_p_opt <- MV_p(k_opt, theta_p, gamma_p)
+
+d_opt    <- d_star(theta_d)
+
+## ---------------------------------------------------------
+## 1) Helper: MV of parametric under budget P_bar
+## ---------------------------------------------------------
+MV_p_under_budget <- function(P_bar) {
+  if (P_bar <= 0) {
+    return(MV_noins)
+  }
+  if (P_bar >= P_p_opt) {
+    return(MV_p_opt)
+  }
+  k_eff <- fk_star(P_bar, theta_p, gamma_p)
+  MV_p(k_eff, theta_p, gamma_p)
+}
+
+## ---------------------------------------------------------
+## 2) Helper: MV of indemnity under budget P_bar and gamma_d
+##    (with option to stay uninsured)
+## ---------------------------------------------------------
+MV_d_under_budget <- function(P_bar, g) {
+  P_d_min_g  <- pi_d(L,     theta_d, g)
+  P_d_opt_g  <- pi_d(d_opt, theta_d, g)
+  MV_d_opt_g <- MV_d(d_opt, theta_d, g)
+
+  # cannot pay fixed cost or minimum premium -> stay uninsured
+  if (g > P_bar || P_bar < P_d_min_g) {
+    return(MV_noins)
+  }
+
+  # candidate indemnity MV under budget
+  if (P_bar >= P_d_opt_g) {
+    MV_d_candidate <- MV_d_opt_g
+  } else {
+    d_eff <- d_budget_for_P(P_bar, theta_d, g)
+    if (is.na(d_eff)) {
+      MV_d_candidate <- MV_noins
+    } else {
+      MV_d_candidate <- MV_d(d_eff, theta_d, g)
+    }
+  }
+
+  max(MV_noins, MV_d_candidate)
+}
+
+## ---------------------------------------------------------
+## 3) User-controlled grids for P_bar and gamma_d
+## ---------------------------------------------------------
+
+# --- adjust these as you like ---
+Pbar_min  <- 0
+Pbar_max  <- 4000   # x-axis max
+gamma_min <- 0
+gamma_max <- 3000   # y-axis max
+n_P       <- 200    # number of P_bar grid points
+n_gamma   <- 120    # number of gamma[d] grid points
+# --------------------------------
+
+Pbar_grid  <- seq(Pbar_min,  Pbar_max,  length.out = n_P)
+gamma_grid <- seq(gamma_min, gamma_max, length.out = n_gamma)
+
+## ---------------------------------------------------------
+## 4) Build matrices MV_p(P_bar) and MV_d(P_bar, gamma_d)
+##     rows: P_bar,   cols: gamma_d   (to match mesh(Pbar, gamma))
+## ---------------------------------------------------------
+MV_p_mat <- matrix(NA_real_, nrow = n_P, ncol = n_gamma)
+MV_d_mat <- matrix(NA_real_, nrow = n_P, ncol = n_gamma)
+
+for (i in seq_along(Pbar_grid)) {
+  P_bar <- Pbar_grid[i]
+  MV_p_row <- MV_p_under_budget(P_bar)  # same for all gamma at this P_bar
+  for (j in seq_along(gamma_grid)) {
+    g <- gamma_grid[j]
+    MV_p_mat[i, j] <- MV_p_row
+    MV_d_mat[i, j] <- MV_d_under_budget(P_bar, g)
+  }
+}
+
+MVdiff <- MV_p_mat - MV_d_mat
+MVdiff_pos <- MVdiff
+MVdiff_pos[MVdiff_pos <= 0] <- NA_real_  # keep only parametric-better region
+
+## ---------------------------------------------------------
+## 5) Create matching x,y matrices for surf3D
+## ---------------------------------------------------------
+M       <- mesh(Pbar_grid, gamma_grid)
+Pbar_mat  <- M$x   # n_P x n_gamma
+gamma_mat <- M$y   # n_P x n_gamma
+z_mat     <- MVdiff_pos  # same dimensions
+
+## ---------------------------------------------------------
+## 6) Surface plot: MV_p^budget - MV_d^budget
+## ---------------------------------------------------------
+surf3D(
+  x = Pbar_mat,
+  y = gamma_mat,
+  z = z_mat,
+  bty    = "b2",
+  colkey = list(width = 0.4),
+  phi    = 25,
+  theta  = -55,
+  xlab   = expression(bar(P)),
+  ylab   = expression(gamma[d]),
+  zlab   = expression(MV[p] - MV[d]),
+  main   = "Positive MV Advantage: Parametric Over Indemnity\n(Budget vs gamma[d])"
+)
+```
+
+
+
