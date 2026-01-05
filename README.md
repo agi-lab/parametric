@@ -18,4 +18,4 @@ An rendered html version of the Rmd can be seen by clicking this link:
 👉 **https://agi-lab.github.io/parametric/**
 
 > **Note:** Clicking `.html` files directly inside GitHub will only show the
-> source code. Use the link above to view the rendered paper.
+> source code. Use the link above to view the rendered code.
