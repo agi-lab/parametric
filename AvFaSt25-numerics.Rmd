@@ -62,15 +62,13 @@ beta <- 1/w0
 
 ```{r premiumpara}
 # extra dollar costs (net of theta)
-gamma_d <- 10000 # indemnity
+gamma_d <- 1000 # indemnity
 gamma_p <- 0 # parametric
 
 # premium loadings, say between 10% and 50%
 theta_d <- 0.3 
 theta_p <- 0.3
 
-# initial budget constraint
-P<-10000
 
 ```
 
@@ -100,7 +98,7 @@ Excess <- function(d){
   (exp(-nu*d_eff) - exp(-nu*L)) / nu
 }
 
-# 2 * (1 - e^{-nu d} (1 + nu d)) / nu^2  with d projected
+# E[min(Y,d)^2]  with d projected
 G_d <- function(d){
   d_eff <- pmin(pmax(d, 0), L)
   2 * (1 - exp(-nu*d_eff) * (1 + nu*d_eff)) / nu^2
@@ -194,93 +192,18 @@ pi_p(k_star(theta_p), theta_p, 0)
 MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(theta_d),theta_d,0)
 ```
 
+
+## Figure 1
+
+What $\gamma_d$ is making the parametric cover preferred with $d^*$. Using both optimal $k^*$ and $k$ so as to equalise premiums ($k \equiv k(\prem{d}{d}{\theta,\gamma_d})$) ?
+
+
 ```{r case1}
 
 # gamma that makes MV equal
 gamma_indif <- uniroot(function(g){MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(theta_d),theta_d,g)}, lower=-10^10, upper=10^10)$root
 gamma_indif
 
-```
-
-## Premium and MV by varying $\gamma_d>0$ and $\gamma_p=0$ fixed
-
-### Premia
-
-```{r optimalpremium function of gamma}
-
-# Range of gamma_d values
-gamma_d_vec <- seq(0, 30000, by = 500)
-
-# Compute premiums
-premium_df <- data.frame(
-  gamma_d = gamma_d_vec,
-  P_d = sapply(gamma_d_vec, function(g) pi_d(d_star(theta_d),theta_d, g)),  
-  P_p = pi_p(k_star(theta_p),theta_p, gamma_p)             # parametric premium (constant)
-)
- 
-# Convert to long format
-premium_df_long <- premium_df %>%
-  pivot_longer(cols = c(P_d, P_p), names_to = "Type", values_to = "Premium")
-
-# Plot (legend only, no direct text labels)
-ggplot(premium_df_long, aes(x = gamma_d, y = Premium, color = Type)) +
-  geom_line(size = 1.2) +
-  scale_color_manual(values = c("P_d" = "#0072B2", "P_p" = "#D55E00")) +
-  scale_y_continuous(limits = c(0, NA)) +  #ensures y-axis starts at 0
-  labs(
-    title = expression("Premiums as functions of " ~ gamma[d]),
-    x = expression(gamma[d]),
-    y = "Premium",
-    color = "Type"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "top",
-    plot.title = element_text(face = "bold", hjust = 0.5)
-  )
-```
-
-### MV
-
-```{r optimalMV function of gamma}
-
-# Range of gamma_d values
-gamma_d_vec <- seq(0, 30000, by = 500)
-
-# Compute premiums
-MV_df <- data.frame(
-  gamma_d = gamma_d_vec,
-  MV_d = sapply(gamma_d_vec, function(g) MV_d(d_star(theta_d),theta_d, g)),  
-  MV_p = MV_p(k_star(theta_p),theta_p, gamma_p)             # parametric premium (constant)
-)
- 
-# Convert to long format
-MV_df_long <- MV_df %>%
-  pivot_longer(cols = c(MV_d, MV_p), names_to = "Type", values_to = "MeanVar")
-
-# Plot (legend only, no direct text labels)
-ggplot(MV_df_long, aes(x = gamma_d, y = MeanVar, color = Type)) +
-  geom_line(size = 1.2) +
-  scale_color_manual(values = c("MV_d" = "#0072B2", "MV_p" = "#D55E00")) +
-  scale_y_continuous(limits = c(0, NA)) +   # ensures y-axis starts at 0
-  labs(
-    title = expression("Mean variance as functions of " ~ gamma[d]),
-    x = expression(gamma[d]),
-    y = "MeanVar",
-    color = "Type"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "top",
-    plot.title = element_text(face = "bold", hjust = 0.5)
-  )
-```
-
-## Figure 1
-
-What $\gamma_d$ is making the parametric cover preferred with $d^*$. Using both optimal $k^*$ and $k$ so as to equalise premiums ($k \equiv k(\prem{d}{d}{\theta,\gamma_d})$) ?
-
-```{r case12}
 
 # gamma_d that makes MV equal if you give parametric the budget spent on d^*
 gamma_indif2 <- uniroot(function(g){
@@ -514,20 +437,15 @@ surf3D(x=d, y=g, z=cap_region, add=TRUE, col="black")
 
 With $\gamma_d=\gamma_p=0$, find $\theta^{indiff}\ (\geq \theta_p)$ such that $\MV{d}{W}{d^*,\theta^{indiff},0}=\MV{p}{W}{k^*,\theta_p,0}$
 
-```{r case3 indiff}
 
-
-# theta that makes MV equal
-theta_indif <- uniroot(function(th){MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(th),th,0)}, lower=theta_p, upper=10^10)$root
-theta_indif
-
-```
 
 What $\theta$ is making the parametric cover preferred with $d^*$. Using both optimal $k^*$ and $k$ so as to equalise premiums ($k \equiv k(\prem{d}{d}{\theta,0})$)
 
 ```{r thetaindif}
-theta_d <- 0.5
-theta_p <- 0.2
+
+# theta that makes MV equal
+theta_indif <- uniroot(function(th){MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(th),th,0)}, lower=theta_p, upper=10^10)$root
+theta_indif
 
 # theta that makes MV equal if you give parametric the budget spent on d^*
 theta_indif2 <- uniroot(function(th){
@@ -541,6 +459,14 @@ theta_indif2
 ```
 
 ### Figure 2a
+
+```{r new theta}
+
+theta_d <- 0.5
+theta_p <- 0.2
+
+```
+
 
 ```{r thetaplot}
 ## ---- thetaplot_clean2, message=FALSE, warning=FALSE --------------------
@@ -751,21 +677,9 @@ surf3D(
   main = "Mean-Variance of Parametric (premium-matched)"
 )
 
-## 3. Difference MV_p - MV_d over the (theta_d, gamma_d) grid
+
+## 3. Only positive MV advantage of parametric
 MVdiff <- MVtgp - MVtgd
-
-# 3a. Full difference surface (can be commented out if not needed)
-surf3D(
-  x = th, y = g, z = MVdiff,
-  bty = "b2", colkey = TRUE,
-  phi = 40, theta = -30,
-  xlab = expression(theta[d]),
-  ylab = expression(gamma[d]),
-  zlab = expression(MV[p] - MV[d]),
-  main = "MV Difference: Parametric Minus Indemnity"
-)
-
-## 4. Only positive MV advantage of parametric
 MVdiff_pos <- MVdiff
 MVdiff_pos[MVdiff_pos < 0] <- NA   # mask negative differences
 
@@ -779,7 +693,7 @@ surf3D(
   main = "Positive MV Advantage: Parametric Over Indemnity"
 )
 
-## 5. Overlay cap region k >= L in black (as in the d-gamma case)
+## 4. Overlay cap region k >= L in black (as in the d-gamma case)
 k_cap <- k_vec  # already computed above
 cap_region <- ifelse(k_cap >= L, 1, NA)
 
@@ -798,6 +712,7 @@ surf3D(
 ## Figure 3: 
 
 Budget constraints
+
 
 
 ```{r BChelper}
@@ -820,10 +735,7 @@ d_budget_for_P <- function(P_target, theta_d, gamma_d) {
   }
   
   # Otherwise, solve for d s.t. pi_d(d) = P_target
-  uniroot(
-    f = function(d) pi_d(d, theta_d, gamma_d) - P_target,
-    interval = c(0, L)
-  )$root
+  fd_star(P_target, theta_d, gamma_d)
 }
 
 
