@@ -443,6 +443,19 @@ What $\theta$ is making the parametric cover preferred with $d^*$. Using both op
 
 ```{r thetaindif}
 
+# ---------------------------------------------------------------------------
+# NOTE (correction, September 2026).
+# Figure 2 is drawn with theta_p = 0.2, which the "new theta" chunk below used
+# to set *after* this chunk had run. The indifference thresholds were therefore
+# computed with theta_p still at its default of 0.3 (see the "premiumpara"
+# chunk), while the figure they annotate uses 0.2. theta_p is now set here, so
+# that the thresholds and the figure share the same theta_p.
+#
+# Effect: theta_indif changes from 1.294 to 1.161. theta_indif2 is essentially
+# unaffected (1.570 -> 1.573). See the README for the full explanation.
+# ---------------------------------------------------------------------------
+theta_p <- 0.2
+
 # theta that makes MV equal
 theta_indif <- uniroot(function(th){MV_p(k_star(theta_p),theta_p,0)-MV_d(d_star(th),th,0)}, lower=theta_p, upper=10^10)$root
 theta_indif
@@ -463,7 +476,7 @@ theta_indif2
 ```{r new theta}
 
 theta_d <- 0.5
-theta_p <- 0.2
+theta_p <- 0.2   # already set above, before the thresholds were computed
 
 ```
 
