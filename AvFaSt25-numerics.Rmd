@@ -30,8 +30,7 @@ library(dplyr)
 # Introduction
 
 This is the code to accompany the paper "When Indemnity Insurance Fails:
-Parametric Coverage under Binding Budget and Risk Constraints" by Benjamin Avanzi, Debbie Kusch Falden, and Mogens Steffensen available on [arxiv]
-(http://www.arxiv.org)
+Parametric Coverage under Binding Budget and Risk Constraints" by Benjamin Avanzi, Debbie Kusch Falden, and Mogens Steffensen, published in the *Journal of Risk and Insurance* (2026), 1–32. https://dx.doi.org/10.1111/jori.70070
 
 # Parameter settings
 
