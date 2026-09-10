@@ -64,7 +64,7 @@ At $\theta_p = 0.3$ the two thresholds are 1.294 and 1.570, which is where the p
 Nothing else in the paper is touched. In particular the following were re-derived independently and reproduce the published values exactly:
 
 - $\mathbb{E}[Y_i] = 266{,}122$, $\Pr[Y_i = L] = 24\%$
-- $d^{*} = 22{,}500$, $k^{*} = 243{,}622$, and the duality $d^{*} + k^{*} = \mathbb{E}[Y_i]$
+- $d^{\ast} = 22{,}500$, $k^{\ast} = 243{,}622$, and the duality $d^{\ast} + k^{\ast} = \mathbb{E}[Y_i]$
 - premiums at the optima, $6{,}353$ and $6{,}334$
 - the no-insurance benchmark $\mathrm{MV}^{(0)} = 131{,}023$
 - the fixed-cost thresholds $\gamma_{\mathrm{indif}} = 3{,}239$ and $\gamma'_{\mathrm{indif}} = 9{,}980$
